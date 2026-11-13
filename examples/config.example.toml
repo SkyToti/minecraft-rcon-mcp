@@ -1,0 +1,67 @@
+# minecraft-rcon-mcp — example configuration.
+#
+# Copy to ~/.config/minecraft-rcon-mcp/config.toml (or pass --config PATH, or set
+# $MINECRAFT_RCON_MCP_CONFIG) and adjust the paths.
+#
+# The RCON password is NOT stored here: it is read from each server's server.properties
+# (enable-rcon=true, rcon.port, rcon.password) every time a command is sent.
+
+# --------------------------------------------------------------------------- servers
+# One table per server. Names may use letters, digits, '-' and '_'.
+
+[servers.test]
+dir  = "~/minecraft/test-server"   # must contain server.properties
+mode = "read-write"                # read, write and (with human approval) confirm-tier commands
+host = "127.0.0.1"                 # default; non-loopback hosts need allow_remote = true
+log  = "logs/latest.log"           # default, relative to dir
+
+[servers.live]
+dir  = "~/minecraft/live-server"
+mode = "read-only"                 # only read commands, even with a confirmation ticket.
+                                   # An omitted mode is also read-only.
+
+# --------------------------------------------------------------------------- limits
+
+[limits]
+commands_per_minute = 30           # per server (run_command, server_status, list_players, spawn_test)
+confirmations_per_minute = 5       # per server, separate bucket for confirm_command
+max_response_chars = 4000          # longer RCON responses are cut and flagged truncated = true
+ticket_ttl_seconds = 60            # how long a confirmation ticket stays valid
+
+# --------------------------------------------------------------------------- audit
+
+[audit]
+path = "~/.local/state/minecraft-rcon-mcp/audit.jsonl"   # JSON lines, file mode 0600
+
+# --------------------------------------------------------------------------- policy
+# Additions on top of the shipped default policy. Patterns are tokens: '?' is exactly one
+# token, '*' (last token only) is one or more. Unmatched commands need confirmation.
+# Commands such as stop, op, kill or fill can never be moved to read or write.
+
+[policy]
+read    = ["mymod status *"]
+write   = []
+confirm = []
+deny    = []
+
+# --------------------------------------------------------------------------- log noise
+# Regular expressions (from you, the operator) whose matching entries find_errors ignores.
+
+[log_noise]
+patterns = ["Couldn't parse data file", "Can't keep up!"]
+
+# --------------------------------------------------------------------------- scenarios
+# Fixed command lists the agent can start with spawn_test. Every step must be a read or
+# write command, the server must be read-write, and every online player must match
+# bot_pattern (an empty server passes).
+
+[scenarios.bot_arena]
+server = "test"
+bot_pattern = "^Bot"
+steps = [
+  "time set day",
+  "weather clear",
+  "player Bot1 spawn at 0 64 0",
+  "tp Bot1 0 64 0",
+]
+step_delay_ms = 250                # 0-60000, pause between steps
