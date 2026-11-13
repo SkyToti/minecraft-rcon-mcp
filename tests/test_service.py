@@ -14,7 +14,7 @@ import minecraft_rcon_mcp.service as service_module
 from fake_rcon import FakeRconServer
 from minecraft_rcon_mcp.config import Config, ConfigError, Scenario, parse_config
 from minecraft_rcon_mcp.logs import NOTE
-from minecraft_rcon_mcp.service import Service
+from minecraft_rcon_mcp.service import COMMAND_NOTE, FILE_TOOLS_PER_MINUTE, Service
 
 PASSWORD = "test-password"
 LIST_EMPTY = "There are 0 of a max of 20 players online: "
@@ -224,7 +224,7 @@ def test_server_status_online(env):
     result = env.service.server_status("test")
     assert result["status"] == "ok" and result["online"] is True
     assert result["players_online"] == 2 and result["players_max"] == 20
-    assert result["players"] == ["Bot1", "Alex"]
+    assert result["players"] == [{"name": "Bot1"}, {"name": "Alex"}]
     assert result["tick"] == {"average_ms": 3.2, "target_ms": 50.0, "p50_ms": 3.0, "p95_ms": 5.1, "p99_ms": 7.9,
                               "state": "The game is running normally"}
     assert "tick_raw" not in result
@@ -318,19 +318,21 @@ def test_list_players_positions_and_unsafe_names(env):
     alex, bad, evil, bot = result["players"]
     assert alex == {"name": "Alex", "x": 1.5, "y": 64.0, "z": -3.25, "dimension": "minecraft:the_nether"}
     assert bad == {"name": "Bad;Name", "skipped": "unsafe name"}
-    assert evil == {"name": "Evil stop", "skipped": "unsafe name"}
+    assert evil == {"name": "stop", "display": "Evil stop", "pos_raw": "", "dimension_raw": ""}
     assert bot["dimension"] == "minecraft:overworld" and bot["pos_raw"] == "No entity was found"
     assert not any("Bad" in c or "Evil" in c for c in env.fake.received)
     assert env.fake.received == [
         "list",
         "data get entity Alex Pos", "data get entity Alex Dimension",
+        "data get entity stop Pos", "data get entity stop Dimension",
         "data get entity Bot_1.x Pos", "data get entity Bot_1.x Dimension",
     ]
 
 
-def test_list_players_capped_at_20(env):
+def test_list_players_capped_at_20(tmp_path, fake_rcon):
     names = [f"P{i}" for i in range(25)]
-    env.fake.responses = {"list": f"There are 25 of a max of 30 players online: {', '.join(names)}"}
+    fake_rcon.responses = {"list": f"There are 25 of a max of 30 players online: {', '.join(names)}"}
+    env = Env(tmp_path, fake_rcon, limits={"commands_per_minute": 41})
     result = env.service.list_players("test")
     assert len(result["players"]) == 20 and result["capped"] is True
     assert len(env.fake.received) == 1 + 2 * 20
@@ -369,7 +371,7 @@ def test_read_command_runs_everywhere(env):
     for server in ("test", "live"):
         result = env.service.run_command(server, "/seed")
         assert result == {"status": "ok", "server": server, "command": "seed", "tier": "read",
-                          "response": "Seed: [42]", "truncated": False}
+                          "response": "Seed: [42]", "truncated": False, "note": COMMAND_NOTE}
     assert env.fake.received == ["seed", "seed"]
 
 
@@ -447,7 +449,7 @@ def test_confirm_round_trip(env):
     assert env.fake.received == []
     result = env.service.confirm_command(issued["ticket"], "stop")
     assert result == {"status": "ok", "server": "test", "command": "stop", "tier": "confirm",
-                      "response": "Stopping the server", "truncated": False}
+                      "response": "Stopping the server", "truncated": False, "note": COMMAND_NOTE}
     assert env.fake.received == ["stop"]
     assert env.outcomes() == ["ticket_issued", "confirmed"]
     assert env.audit()[1]["tool"] == "confirm_command" and env.audit()[1]["server"] == "test"
@@ -758,3 +760,114 @@ def test_spawn_test_server_down(tmp_path, fake_rcon):
     write_properties(e.test_dir, closed_port())
     result = e.service.spawn_test("arena")
     assert result["status"] == "error" and result["steps"] == []
+
+
+# ============================================================================================ review fixes
+
+
+RANKED = "There are 2 of a max of 20 players online: [Rango D] BotMCP, [Admin] [VIP] Alex"
+
+
+def test_list_players_rank_prefix_uses_the_last_token(env):
+    env.fake.responses = {
+        "list": RANKED,
+        "data get entity BotMCP Pos": "BotMCP has the following entity data: [1.0d, 2.0d, 3.0d]",
+        "data get entity BotMCP Dimension": 'BotMCP has the following entity data: "minecraft:overworld"',
+    }
+    result = env.service.list_players("test")
+    bot, alex = result["players"]
+    assert bot == {"name": "BotMCP", "display": "[Rango D] BotMCP", "x": 1.0, "y": 2.0, "z": 3.0,
+                   "dimension": "minecraft:overworld"}
+    assert alex["name"] == "Alex" and alex["display"] == "[Admin] [VIP] Alex"
+    assert env.fake.received == ["list", "data get entity BotMCP Pos", "data get entity BotMCP Dimension",
+                                 "data get entity Alex Pos", "data get entity Alex Dimension"]
+
+
+def test_list_players_display_is_cut_and_bad_last_token_skipped(env):
+    entries = "[" + "R" * 60 + "] Eve, [Mod] Bad;Name"
+    env.fake.responses = {"list": "There are 2 of a max of 20 players online: " + entries}
+    eve, bad = env.service.list_players("test")["players"]
+    assert eve["name"] == "Eve" and len(eve["display"]) == 40
+    assert bad == {"name": "[Mod] Bad;Name", "skipped": "unsafe name"}
+    assert not any("Bad" in c for c in env.fake.received)
+
+
+def test_server_status_players_use_list_players_name_handling(env):
+    names = ["[Rango D] BotMCP", "Alex", "evil;name"] + [f"P{i}" for i in range(30)]
+    env.fake.responses["list"] = f"There are {len(names)} of a max of 50 players online: " + ", ".join(names)
+    players = env.service.server_status("test")["players"]
+    assert len(players) == 20
+    assert players[0] == {"name": "BotMCP", "display": "[Rango D] BotMCP"}
+    assert players[1] == {"name": "Alex"}
+    assert players[2] == {"display": "evil;name", "skipped": "unsafe name"}
+
+
+def test_spawn_test_matches_bot_pattern_against_the_extracted_name(tmp_path, fake_rcon):
+    e = scenario_env(tmp_path, fake_rcon, "There are 1 of a max of 20 players online: [Rango D] BotMCP")
+    assert e.service.spawn_test("arena")["status"] == "ok"
+
+
+@pytest.mark.parametrize("entry", ["[Bot] Diego", "Bot1 Diego", "[Rango] Bot;1"])
+def test_spawn_test_rank_prefix_cannot_disguise_a_human(tmp_path, fake_rcon, entry):
+    e = scenario_env(tmp_path, fake_rcon, f"There are 1 of a max of 20 players online: {entry}")
+    result = e.service.spawn_test("arena")
+    assert result["status"] == "refused" and result["players_not_matching"] == [entry]
+    assert fake_rcon.received == ["list"]
+
+
+def test_list_players_spends_one_token_per_command_and_stops_early(tmp_path, fake_rcon):
+    names = [f"P{i}" for i in range(10)]
+    fake_rcon.responses = {"list": f"There are 10 of a max of 20 players online: {', '.join(names)}"}
+    e = Env(tmp_path, fake_rcon, limits={"commands_per_minute": 6})
+    result = e.service.list_players("test")
+    assert result["status"] == "ok" and result["capped"] is True and result["reason"] == "rate limit"
+    assert [p["name"] for p in result["players"]] == ["P0", "P1"]      # 1 (list) + 2 + 2 tokens, 1 left over
+    assert len(fake_rcon.received) == 5
+    assert e.service.run_command("test", "seed")["status"] == "ok"       # the leftover token
+    assert e.service.run_command("test", "seed")["status"] == "rate_limited"
+
+
+def test_list_players_without_rate_limit_has_no_reason(env):
+    env.fake.responses = {"list": "There are 1 of a max of 20 players online: Alex"}
+    result = env.service.list_players("test")
+    assert result["capped"] is False and "reason" not in result
+
+
+def test_file_tools_have_their_own_bucket(tmp_path, fake_rcon):
+    fake_rcon.responses = {"list": LIST_EMPTY, "seed": "Seed: [1]"}
+    e = Env(tmp_path, fake_rcon, limits={"commands_per_minute": 1})
+    logs = e.test_dir / "logs"
+    logs.mkdir()
+    (logs / "latest.log").write_text("[10:00:00] [Server thread/INFO]: hi\n", encoding="utf-8")
+    tools = [lambda: e.service.tail_log("test"), lambda: e.service.find_errors("test"),
+             lambda: e.service.list_mods("test")]
+    statuses = [tools[i % 3]()["status"] for i in range(FILE_TOOLS_PER_MINUTE)]
+    assert statuses == ["ok"] * FILE_TOOLS_PER_MINUTE                    # not limited by commands_per_minute
+    limited = e.service.list_mods("test")
+    assert limited["status"] == "rate_limited" and limited["retry_after_seconds"] >= 1
+    assert e.service.tail_log("live")["status"] != "rate_limited"       # per server
+    assert e.service.run_command("test", "seed")["status"] == "ok"      # the RCON bucket is untouched
+    e.clock.advance(1)
+    assert e.service.tail_log("test")["status"] == "ok"                 # 2 per second refill
+
+
+def test_command_output_note_only_when_there_is_output(tmp_path, fake_rcon):
+    fake_rcon.responses = {"list": LIST_EMPTY, "seed": "Seed: [1]", "weather clear": "", "time set day": "Set"}
+    e = Env(tmp_path, fake_rcon, scenarios={"arena": scenario(steps=["weather clear", "time set day"])})
+    assert e.service.run_command("test", "seed")["note"] == COMMAND_NOTE
+    assert "note" not in e.service.run_command("test", "weather clear")
+    steps = e.service.spawn_test("arena")["steps"]
+    assert "note" not in steps[0] and steps[1]["note"] == COMMAND_NOTE
+
+
+def test_password_is_scrubbed_before_any_cut(tmp_path, fake_rcon):
+    fake_rcon.responses = {
+        "list": "There are 1 of a max of 20 players online: " + "[" + "r" * 34 + PASSWORD + "] Alex",
+        "data get entity Alex Pos": "p" * 195 + PASSWORD,
+        "data get entity Alex Dimension": "",
+        "seed": "s" * 3990 + PASSWORD,
+    }
+    e = Env(tmp_path, fake_rcon)
+    dumped = json.dumps([e.service.list_players("test"), e.service.server_status("test"),
+                         e.service.run_command("test", "seed")])
+    assert PASSWORD[:5] not in dumped

@@ -63,3 +63,19 @@ def test_clock_going_backwards_does_not_add_tokens() -> None:
 def test_invalid_rate(bad) -> None:
     with pytest.raises(ValueError):
         RateLimiter(per_minute=bad)
+
+
+def test_cost_is_all_or_nothing() -> None:
+    clock = FakeClock()
+    limiter = RateLimiter(per_minute=3, clock=clock)
+    assert limiter.allow("s", cost=2) == (True, 0.0)
+    allowed, retry_after = limiter.allow("s", cost=2)
+    assert allowed is False and retry_after == pytest.approx(20.0)   # 1 token left, 1 more needed at 1/20 s
+    assert limiter.allow("s")[0] is True                             # the refused call consumed nothing
+    assert limiter.allow("s")[0] is False
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5])
+def test_cost_must_be_a_positive_integer(bad) -> None:
+    with pytest.raises(ValueError):
+        RateLimiter(per_minute=3, clock=FakeClock()).allow("s", cost=bad)

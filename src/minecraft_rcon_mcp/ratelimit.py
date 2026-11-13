@@ -20,15 +20,20 @@ class RateLimiter:
         self._buckets: dict[str, tuple[float, float]] = {}  # key -> (tokens, last refill time)
         self._lock = threading.Lock()
 
-    def allow(self, key: str) -> tuple[bool, float]:
-        """(allowed, retry_after_seconds). An allowed call consumes one token; retry_after is 0.0 then."""
+    def allow(self, key: str, cost: int = 1) -> tuple[bool, float]:
+        """(allowed, retry_after_seconds). An allowed call consumes `cost` tokens; retry_after is 0.0 then.
+
+        All or nothing: when fewer than `cost` tokens are left, nothing is consumed.
+        """
+        if isinstance(cost, bool) or not isinstance(cost, int) or cost < 1:
+            raise ValueError("cost must be a positive integer")
         with self._lock:
             now = self._clock()
             tokens, last = self._buckets.get(key, (self.capacity, now))
             tokens = min(self.capacity, tokens + max(0.0, now - last) * self.rate)
             last = max(last, now)  # a clock going backwards never earns tokens later
-            if tokens >= 1.0:
-                self._buckets[key] = (tokens - 1.0, last)
+            if tokens >= cost:
+                self._buckets[key] = (tokens - cost, last)
                 return True, 0.0
             self._buckets[key] = (tokens, last)
-            return False, (1.0 - tokens) / self.rate
+            return False, (cost - tokens) / self.rate
