@@ -64,7 +64,6 @@ write = [
     "particle *",
     "save-all",
     "save-on",
-    "tick *",                       # "tick query" is more specific and stays read
     "player *",                     # Carpet fake players
     "data merge *",
     "data modify *",
@@ -93,6 +92,7 @@ confirm = [
     "function *",
     "schedule *",
     "setworldspawn *",
+    "tick *",                       # freeze / sprint / step / rate can stall the server; "tick query" stays read
 ]
 
 deny = [

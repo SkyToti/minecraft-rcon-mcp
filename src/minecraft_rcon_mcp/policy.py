@@ -13,10 +13,17 @@ How a command is classified, in order:
 3. ``HARD_DENY`` roots are ``deny``. ``execute … run X`` and ``return run X`` take the tier of ``X``.
    Otherwise the policy patterns decide; nothing matched → ``confirm``.
 4. ``HARD_CONFIRM`` roots, and every root starting with ``/`` (WorldEdit), are never below ``confirm``.
-5. A ``write`` command becomes ``confirm`` when an unbounded ``@a`` / ``@e`` selector multiplies its effect:
-   in its own arguments, or in the prefix of an ``execute`` that wraps it. Message commands (``MESSAGE_ROOTS``:
+5. A ``write`` command becomes ``confirm`` when an unbounded selector multiplies its effect: in its own
+   arguments, or in the prefix of an ``execute`` that wraps it. Message commands (``MESSAGE_ROOTS``:
    ``say``, ``tellraw``…) do not escalate on their own arguments: asking a human to approve every broadcast
    causes approval fatigue, which weakens the confirmations that matter.
+6. Indirect execution: if the whole normalized command (``execute`` prefix, NBT and JSON included) contains an
+   ``INDIRECT_MARKERS`` substring, or (for a ``write``) an NBT path token ending in ``Command``, it is raised
+   to at least ``confirm``. A command block, a command-block minecart or a ``run_command`` click event stores a
+   command that runs later with no ticket. This applies to every root, ``MESSAGE_ROOTS`` included, and no user
+   pattern can lower it. The check also runs on a copy with SNBT/JSON escapes (``\\u0061``, ``\\x61``, ``\\N{…}``) decoded
+   and quotes and whitespace removed, so ``{'Command' : "x"}`` is caught too. False positives are accepted:
+   ``say I typed a command: x`` and ``say command`` need confirmation.
 
 Pattern syntax (token globs): a literal token matches itself; ``?`` matches exactly one token (an extension of
 DESIGN §4.3, used for ``gamerule ?`` vs ``gamerule ? ?``); ``*`` matches one or more tokens and is only allowed
@@ -30,8 +37,12 @@ Choices stricter than the letter of DESIGN §4 (each is tested):
   make it at least ``write``; ``function`` (``execute if function``) makes it at least ``confirm``.
 - Selectors: ``@a`` needs ``limit=N`` with 1 ≤ N ≤ 10; ``@e`` needs a positive ``type=`` (``type=!x`` does not
   count), and ``@e[type=player]`` is treated like ``@a``. Selectors with nested data (``{``, ``[``, quotes) or
-  split by spaces count as unbounded. An unbounded selector in the ``execute`` prefix escalates whatever
-  ``write`` command it wraps (``execute as @a run say hi`` needs confirmation).
+  split by spaces count as unbounded. ANY selector (``@p``, ``@r``, ``@n``, ``@s`` too) is unbounded when it
+  sets ``limit=`` to anything but 1..10 or sets ``limit=`` more than once; ``@p``/``@r``/``@n`` without
+  ``limit=`` stay bounded. In ``scoreboard players …`` a standalone ``*`` (every score holder) counts as an
+  unbounded selector, and so does a standalone ``*`` in an ``execute`` prefix (``store … score * obj``).
+  An unbounded selector in the ``execute`` prefix escalates whatever ``write`` command it wraps
+  (``execute as @a run say hi`` needs confirmation).
 - Other namespaces (``plugin:cmd``) are classified as ``cmd`` but never below ``confirm``, unless a pattern
   names the namespaced root explicitly.
 - An unknown ``mode`` is treated as ``read-only``.
@@ -39,6 +50,7 @@ Choices stricter than the letter of DESIGN §4 (each is tested):
 from __future__ import annotations
 
 import functools
+import re
 import tomllib
 import unicodedata
 from dataclasses import dataclass
@@ -85,12 +97,22 @@ HARD_DENY: frozenset[str] = frozenset({"debug", "perf", "jfr", "publish", "trans
 # Commands that only show something to players: an unbounded selector in their own arguments picks the
 # audience, it does not multiply a state change. (A selector in a wrapping execute prefix still counts.)
 MESSAGE_ROOTS: frozenset[str] = frozenset({"say", "tellraw", "title", "playsound", "particle"})
+# Substrings (of the lower-cased whole command) that may store a command which runs later, with no ticket:
+# command blocks and their minecarts, "run_command" click events in text, signs and books, "Command" NBT.
+INDIRECT_MARKERS: tuple[str, ...] = ("command_block", "run_command", "command:", '"command"')
 
 MAX_COMMAND_BYTES = 1400
 MAX_EXECUTE_DEPTH = 8
 MAX_SELECTOR_LIMIT = 10
 _VANILLA_NAMESPACE = "minecraft:"
-_UNBOUNDED = f"unbounded selector (@a needs limit=1..{MAX_SELECTOR_LIMIT}, @e needs type=)"
+_UNBOUNDED = (f"unbounded selector (@a needs limit=1..{MAX_SELECTOR_LIMIT}, @e needs type=, no selector may "
+              f"set limit= above {MAX_SELECTOR_LIMIT}, '*' is every score holder)")
+_INDIRECT = "may store a command that runs later (indirect execution)"
+# markers still meaningful once quotes and whitespace are removed ('"command"' would match any word)
+_CANONICAL_MARKERS = ("command_block", "run_command", "command:")
+_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|N\{([^}]{1,100})\})")
+_STRIPPED = re.compile(r"[\s'\"\\\\]")
+_COMMAND_PATH = re.compile(r"(?:.*[.\]])?command")   # NBT path whose last key is Command: "Command", "a[0].Command"
 
 _SEVERITY = {Tier.READ: 0, Tier.WRITE: 1, Tier.CONFIRM: 2, Tier.DENY: 3}
 _FORBIDDEN_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
@@ -199,19 +221,33 @@ def _selector_args(token: str) -> dict[str, list[str]] | None:
     return args
 
 
+def _bounded_limit(values: Sequence[str]) -> bool:
+    """Exactly one limit= value, a plain ASCII number from 1 to MAX_SELECTOR_LIMIT."""
+    return len(values) == 1 and values[0].isascii() and values[0].isdigit() and (
+        1 <= int(values[0]) <= MAX_SELECTOR_LIMIT)
+
+
 def _is_unbounded_selector(token: str) -> bool:
-    """@a needs limit=1..10; @e needs a positive type= (and limit= when the type is player)."""
+    """@a needs limit=1..10; @e needs a positive type= (and limit= when the type is player).
+
+    Any selector with limit= outside 1..10, or with limit= twice, is unbounded; @s/@p/@r/@n without it are not.
+    """
+    if not token.startswith("@") or len(token) < 2:
+        return False  # a plain name
     kind = token[:2].lower()
-    if kind not in ("@a", "@e"):
-        return False  # @s, @p, @r, @n and plain names never escalate
     args = _selector_args(token)
+    if kind not in ("@a", "@e"):
+        if args is None:
+            return "limit" in token.lower()  # cannot parse: any limit= could be a big one
+        limits = [v for k, values in args.items() if k.lower() == "limit" for v in values]
+        return bool(limits) and not _bounded_limit(limits)
     if args is None:
         return True
-    limited = any(
-        v.isascii() and v.isdigit() and 1 <= int(v) <= MAX_SELECTOR_LIMIT for v in args.get("limit", [])
-    )
+    limited = _bounded_limit(args.get("limit", []))
     if kind == "@a":
         return not limited
+    if len(args.get("limit", [])) > 1:
+        return True
     types = [v for v in args.get("type", []) if v and not v.startswith("!")]
     if not types:
         return True
@@ -219,6 +255,35 @@ def _is_unbounded_selector(token: str) -> bool:
         return not limited
     return False
 
+
+def _all_score_holders(bare: str, args: Sequence[str]) -> bool:
+    """'scoreboard players … *': a standalone '*' is every tracked score holder."""
+    return bare == "scoreboard" and bool(args) and args[0].lower() == "players" and "*" in args
+
+
+def _unescape(match: re.Match[str]) -> str:
+    code, wide, byte, name = match.groups()
+    try:
+        if name is not None:
+            return unicodedata.lookup(name)
+        return chr(int(code or wide or byte, 16))
+    except (KeyError, ValueError):
+        return match.group(0)
+
+
+def _stores_command(normalized: str, tier: Tier) -> bool:
+    """True when the command may store a command that runs later (see INDIRECT_MARKERS).
+
+    An NBT path ending in Command (``data modify block … Command set value …``) only counts for a ``write``:
+    reading a command block's command (``data get block … Command``) stays ``read``.
+    """
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in INDIRECT_MARKERS):
+        return True
+    if tier is Tier.WRITE and any(_COMMAND_PATH.fullmatch(token) for token in lowered.split(" ")):
+        return True
+    canonical = _STRIPPED.sub("", _ESCAPE.sub(_unescape, normalized).lower())
+    return any(marker in canonical for marker in _CANONICAL_MARKERS)
 
 # --------------------------------------------------------------------------------------------- classify
 
@@ -272,7 +337,8 @@ def _classify_words(words: tuple[str, ...], policy: Policy) -> tuple[Tier, str]:
                 tier, reason = Tier.CONFIRM, f"namespaced command '{root}' needs confirmation"
         else:
             args = words[start + 1:]
-            own_selectors = bare not in MESSAGE_ROOTS and any(_is_unbounded_selector(a) for a in args)
+            own_selectors = bare not in MESSAGE_ROOTS and (
+                any(_is_unbounded_selector(a) for a in args) or _all_score_holders(bare, args))
             tier, reason = _escalate(_pattern_tier(policy, root, bare, args), own_selectors)
 
         if (_is_hard_confirm(root) or _is_hard_confirm(bare)) and _SEVERITY[tier] < _SEVERITY[Tier.CONFIRM]:
@@ -292,7 +358,8 @@ def _classify_words(words: tuple[str, ...], policy: Policy) -> tuple[Tier, str]:
             if token == "run" and (i + 1 < len(words) or not candidates):
                 candidates += [_escalate(at(i + 1, depth + 1), unbounded), _escalate(_execute_floor(prefix), unbounded)]
             prefix.add(token)
-            unbounded = unbounded or _is_unbounded_selector(words[i])
+            # a standalone '*' in the prefix can only be "every score holder" (execute store … score * obj)
+            unbounded = unbounded or _is_unbounded_selector(words[i]) or words[i] == "*"
         if not candidates:
             return _escalate(_execute_floor(prefix), unbounded)
         return max(candidates, key=lambda candidate: _SEVERITY[candidate[0]])
@@ -324,6 +391,8 @@ def classify(command: str, mode: str, policy: Policy) -> Decision:
     try:
         words = tuple(normalized.split(" "))
         tier, reason = _classify_words(words, policy)
+        if _SEVERITY[tier] < _SEVERITY[Tier.CONFIRM] and _stores_command(normalized, tier):
+            tier, reason = Tier.CONFIRM, _INDIRECT  # after the patterns: no user config can lower it
         return _decide(tier, mode, normalized, reason)
     except Exception:  # noqa: BLE001 — e.g. a malformed pattern in a hand-built Policy
         return Decision(Tier.DENY, False, False, normalized, "Refused: the policy could not be evaluated.")

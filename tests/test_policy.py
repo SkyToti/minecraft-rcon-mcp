@@ -6,6 +6,7 @@ import pytest
 from minecraft_rcon_mcp.policy import (
     HARD_CONFIRM,
     HARD_DENY,
+    INDIRECT_MARKERS,
     MAX_COMMAND_BYTES,
     MESSAGE_ROOTS,
     CommandRejected,
@@ -88,9 +89,6 @@ WRITE_EXAMPLES = [
     "particle minecraft:flame 0 64 0",
     "save-all",
     "save-on",
-    "tick freeze",
-    "tick rate 40",
-    "tick query extra",  # not the exact "tick query" read form
     "player Bot1 spawn at 0 64 0",
     "data merge entity Bot1 {Invulnerable:1b}",
     "data modify entity Bot1 Health set value 20f",
@@ -127,6 +125,9 @@ CONFIRM_EXAMPLES = [
     "function mypack:wipe",
     "schedule function mypack:wipe 10t",
     "setworldspawn 0 64 0",
+    "tick freeze",  # every tick form but the exact "tick query" can stall the server
+    "tick rate 40",
+    "tick query extra",
     "gamerule a b c",  # neither the query nor the set form
     "list extra",
     "unknowncommand",
@@ -547,7 +548,7 @@ def test_pattern_without_star_matches_whole_command():
 
 def test_arguments_match_case_sensitively():
     assert tier_of("tick query") is Tier.READ
-    assert tier_of("tick QUERY") is Tier.WRITE  # falls to "tick *"
+    assert tier_of("tick QUERY") is Tier.CONFIRM  # falls to "tick *"
     assert tier_of("data GET entity Bot1") is Tier.CONFIRM  # matches nothing
 
 
@@ -578,7 +579,7 @@ def test_hard_roots_enforced_even_in_hand_built_policy():
 def test_default_policy_loads_four_tiers():
     assert isinstance(POLICY, Policy)
     assert "gamerule ?" in POLICY.read and "gamerule ? ?" in POLICY.write
-    assert "tick query" in POLICY.read and "tick *" in POLICY.write
+    assert "tick query" in POLICY.read and "tick *" in POLICY.confirm
     for root in HARD_DENY:
         assert root in POLICY.deny
 
@@ -670,3 +671,130 @@ def test_merge_deduplicates():
     merged = merge_policy(POLICY, {"read": ["mymod status *", "mymod status *", "list"]})
     assert merged.read.count("mymod status *") == 1
     assert merged.read.count("list") == 1
+
+
+# ------------------------------------------------------------------------------------------ selector limits
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        ("tp @p[limit=1000] 0 64 0", Tier.CONFIRM),   # any selector with limit above 10
+        ("tp @r[limit=11] 0 64 0", Tier.CONFIRM),
+        ("tp @n[type=zombie,limit=50] 0 64 0", Tier.CONFIRM),
+        ("tp @s[limit=99] 0 64 0", Tier.CONFIRM),
+        ("tp @p[limit=1,limit=2] 0 64 0", Tier.CONFIRM),  # limit= twice
+        ("tp @a[limit=1,limit=2] 0 64 0", Tier.CONFIRM),
+        ("tp @e[type=zombie,limit=1,limit=5] 0 64 0", Tier.CONFIRM),
+        ("tp @p[nbt={a:1},limit=1000] 0 64 0", Tier.CONFIRM),  # unparseable and mentions limit
+        ("tp @p[limit=10] 0 64 0", Tier.WRITE),
+        ("tp @r[limit=3,sort=random] 0 64 0", Tier.WRITE),
+        ("tp @p[distance=..5] 0 64 0", Tier.WRITE),          # no limit=: stays bounded
+        ("tp @p[nbt={a:1}] 0 64 0", Tier.WRITE),
+        ("tp @e[type=zombie,limit=1] 0 64 0", Tier.WRITE),
+        ("say hi @p[limit=1000]", Tier.WRITE),                # message roots pick an audience
+        ("execute as @p[limit=1000] run say hi", Tier.CONFIRM),
+    ],
+)
+def test_selector_limit_rules(command, expected):
+    assert tier_of(command) is expected
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        ("scoreboard players reset *", Tier.CONFIRM),
+        ("scoreboard players set * kills 0", Tier.CONFIRM),
+        ("scoreboard players operation @s kills += * kills", Tier.CONFIRM),
+        ("execute store result score * kills run list", Tier.CONFIRM),
+        ("scoreboard players list *", Tier.READ),             # a read never escalates
+        ("scoreboard players set Bot1 kills 0", Tier.WRITE),
+        ("scoreboard objectives add * dummy", Tier.WRITE),    # not a score holder
+    ],
+)
+def test_scoreboard_wildcard_holder(command, expected):
+    assert tier_of(command) is expected
+
+
+# ------------------------------------------------------------------------------------------ tick
+
+
+@pytest.mark.parametrize("command", ["tick freeze", "tick unfreeze", "tick sprint 100", "tick step 5",
+                                     "tick rate 0.1", "tick sprint stop"])
+def test_tick_forms_other_than_query_need_confirmation(command):
+    assert tier_of(command) is Tier.CONFIRM
+    assert tier_of("tick query") is Tier.READ
+
+
+def test_operator_may_lower_tick_forms():
+    merged = merge_policy(POLICY, {"write": ["tick freeze", "tick unfreeze"]})
+    assert tier_of("tick freeze", merged) is Tier.WRITE
+    assert tier_of("tick unfreeze", merged) is Tier.WRITE
+    assert tier_of("tick sprint 100", merged) is Tier.CONFIRM
+
+
+# ------------------------------------------------------------------------------------------ indirect execution
+
+
+INDIRECT = [
+    'setblock 0 64 0 minecraft:repeating_command_block{Command:"fill 0 0 0 9 9 9 air",auto:1b}',
+    'summon command_block_minecart ~ ~ ~ {Command:"stop"}',
+    "give @s minecraft:command_block",
+    'data merge block 0 64 0 {Command:"stop"}',
+    "data merge block 0 64 0 {'Command':\"stop\"}",          # single-quoted key
+    'data merge block 0 64 0 {Command :"stop"}',             # space before the colon
+    'data merge block 0 64 0 {"Command":"stop"}',
+    'data modify block 0 64 0 Command set value "stop"',     # NBT path, no colon
+    'data modify entity @s Passengers[0].Command set value "stop"',
+    'tellraw Steve {"text":"x","clickEvent":{"action":"run_command","value":"/op Steve"}}',
+    'tellraw Steve {"text":"x","click_event":{"action":"run_command","command":"/op Steve"}}',
+    'tellraw Steve {"text":"x","clickEvent":{"action":"run_comm\\u0061nd","value":"/op Steve"}}',  # JSON escape
+    'tellraw Steve {"text":"x","clickEvent":{"action":"run_comm\\x61nd","value":"/op Steve"}}',
+    "tellraw Steve {\"text\":\"x\",\"clickEvent\":{\"action\":\"run_comm\\N{LATIN SMALL LETTER A}nd\"}}",
+    'title @a title {"text":"x","clickEvent":{"action":"run_command","value":"/stop"}}',
+    "execute as @s run give @s command_block",
+    'item replace block 0 64 0 container.0 with written_book[written_book_content={pages:[{text:"x",'
+    'click_event:{action:"run_command",command:"/op Eve"}}]}]',
+    "say I typed a command: x",                               # accepted false positive
+]
+
+
+@pytest.mark.parametrize("command", INDIRECT)
+def test_indirect_execution_needs_confirmation(command):
+    decision = classify(command, RW, POLICY)
+    assert decision.tier in (Tier.CONFIRM, Tier.DENY), (command, decision.reason)
+    assert not decision.allowed
+
+
+def test_indirect_reason_and_read_only_refusal():
+    decision = classify("give @s command_block", RW, POLICY)
+    assert decision.needs_confirmation and "indirect execution" in decision.reason
+    refused = classify("give @s command_block", RO, POLICY)
+    assert not refused.allowed and not refused.needs_confirmation
+
+
+def test_indirect_markers_cannot_be_lowered_by_config():
+    merged = merge_policy(POLICY, {"write": ["give @s command_block", "mymod store *"], "read": ["mymod show *"]})
+    assert tier_of("give @s command_block", merged) is Tier.CONFIRM
+    assert tier_of('mymod store {Command:"stop"}', merged) is Tier.CONFIRM
+    assert tier_of("mymod show run_command", merged) is Tier.CONFIRM
+    assert tier_of("mymod show x", merged) is Tier.READ
+
+
+def test_indirect_markers_constant():
+    assert INDIRECT_MARKERS == ("command_block", "run_command", "command:", '"command"')
+
+
+@pytest.mark.parametrize("command", [
+    "data get block 0 64 0 Command",     # reading a command block stays read
+    'tellraw @a {"text":"hi"}',
+    "say commands are fun",
+    "give @s minecraft:stone",
+    "setblock 0 64 0 minecraft:stone",
+])
+def test_no_indirect_false_positive_on_plain_commands(command):
+    assert classify(command, RW, POLICY).allowed
+
+
+def test_deny_is_never_lowered_by_the_indirect_rule():
+    assert tier_of("debug start command_block") is Tier.DENY
