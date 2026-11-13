@@ -188,4 +188,4 @@ Design, threat model and policy details: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## License
 
-MIT.
+MIT. See [`LICENSE`](LICENSE).

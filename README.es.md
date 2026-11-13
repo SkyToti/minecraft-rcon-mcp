@@ -188,4 +188,4 @@ Diseño, modelo de amenazas y detalles de la política: [`docs/DESIGN.md`](docs/
 
 ## Licencia
 
-MIT.
+MIT. Ver [`LICENSE`](LICENSE).
