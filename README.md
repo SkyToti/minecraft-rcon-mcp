@@ -6,7 +6,7 @@ An MCP server that lets an AI agent operate a Minecraft Java server over RCON wi
 
 - **Problem:** RCON has no permission levels. Giving an agent the RCON password gives it operator rights.
 - **Idea:** the agent can read state and run routine commands. Dangerous commands run only if a person approves that exact command, and the approval happens outside the model.
-- **Status:** version 0.1.0, 789 tests, no dependencies beyond the official `mcp` SDK.
+- **Status:** version 0.1.0, 1,092 tests, no dependencies beyond the official `mcp` SDK.
 
 <!-- demo: docs/demo.gif -->
 PENDIENTE: demo.gif
@@ -163,6 +163,7 @@ Full example with comments: [`examples/config.example.toml`](examples/config.exa
 ## Development
 
 ```bash
+.venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 

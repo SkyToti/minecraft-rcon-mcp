@@ -9,7 +9,7 @@ from fake_rcon import FakeRconServer
 from minecraft_rcon_mcp.rcon import MAX_BODY_BYTES, RconAuthError, RconClient, RconError
 
 PASSWORD = "test-password"
-SECRET = "s3cr3t-Hunter2-pw"
+SECRET = "s3cr3t-Hunter2-pw"  # test fixture, not a real credential  # gitleaks:allow
 
 
 def client_for(server: FakeRconServer, password: str = PASSWORD, **kw) -> RconClient:

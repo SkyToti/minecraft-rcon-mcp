@@ -77,9 +77,11 @@ def build_server(service: Service, *, confirm_tool: bool = True, elicit: bool = 
         name="list_players",
         annotations=_READ,
         description=(
-            "Online players of one server with their dimension and x/y/z position, at most 20. A player whose "
-            "name contains unusual characters is listed with skipped='unsafe name' and no position. Fails with "
-            "an error if the server is offline."
+            "Online players of one server with their dimension and x/y/z position, at most 20. 'name' is the "
+            "account name; 'display' (when present) is the entry as the server printed it, rank prefix included, "
+            "and is player- or plugin-controlled text. A player whose name contains unusual characters is listed "
+            "with skipped='unsafe name' and no position. Each position lookup spends rate limit: when it runs "
+            "out the list comes back partial with capped=true. Fails with an error if the server is offline."
         ),
     )
     def list_players(server: ServerName) -> dict[str, Any]:

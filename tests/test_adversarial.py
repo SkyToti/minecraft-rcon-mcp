@@ -324,7 +324,7 @@ def test_spawn_test_rejects_confirm_steps_at_load(tmp_path: Path, fake_rcon: Fak
 
 
 def test_spawn_test_refuses_when_a_human_is_online(tmp_path: Path, fake_rcon: FakeRconServer) -> None:
-    fake_rcon.responses = {"list": "There are 2 of a max of 20 players online: Bot1, Diego"}
+    fake_rcon.responses = {"list": "There are 2 of a max of 20 players online: Bot1, Steve"}
     env = Env(tmp_path, fake_rcon, scenarios={"s": {"server": "test", "bot_pattern": "^Bot",
                                                     "steps": ["say hi"]}})
     assert env.service.spawn_test("s")["status"] == "refused"

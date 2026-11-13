@@ -6,7 +6,7 @@ Un servidor MCP que deja a un agente de IA operar un servidor de Minecraft Java 
 
 - **Problema:** RCON no tiene niveles de permiso. Darle la contraseña RCON a un agente es darle permisos de operador.
 - **Idea:** el agente puede leer el estado y ejecutar lo rutinario. Lo peligroso solo corre si una persona aprueba ese comando exacto, y esa aprobación ocurre fuera del modelo.
-- **Estado:** versión 0.1.0, 789 pruebas, sin dependencias fuera del SDK oficial `mcp`.
+- **Estado:** versión 0.1.0, 1.092 pruebas, sin dependencias fuera del SDK oficial `mcp`.
 
 <!-- demo: docs/demo.gif -->
 PENDIENTE: demo.gif
@@ -163,6 +163,7 @@ Ejemplo completo con comentarios: [`examples/config.example.toml`](examples/conf
 ## Desarrollo
 
 ```bash
+.venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 

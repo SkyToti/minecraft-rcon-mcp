@@ -807,7 +807,7 @@ def test_spawn_test_matches_bot_pattern_against_the_extracted_name(tmp_path, fak
     assert e.service.spawn_test("arena")["status"] == "ok"
 
 
-@pytest.mark.parametrize("entry", ["[Bot] Diego", "Bot1 Diego", "[Rango] Bot;1"])
+@pytest.mark.parametrize("entry", ["[Bot] Steve", "Bot1 Steve", "[Rango] Bot;1"])
 def test_spawn_test_rank_prefix_cannot_disguise_a_human(tmp_path, fake_rcon, entry):
     e = scenario_env(tmp_path, fake_rcon, f"There are 1 of a max of 20 players online: {entry}")
     result = e.service.spawn_test("arena")
