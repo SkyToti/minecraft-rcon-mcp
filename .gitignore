@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+# local notes and agent worktrees
+.notas/
+.claude/worktrees/
+# never commit real server config or audit logs
+config.toml
+audit.jsonl
+server.properties
