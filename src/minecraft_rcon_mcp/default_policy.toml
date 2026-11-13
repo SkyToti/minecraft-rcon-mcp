@@ -1,0 +1,105 @@
+# Default command policy (docs/DESIGN.md §4.4). Loaded by policy.load_default_policy().
+#
+# Token globs: "*" = one or more tokens (last position only), "?" = exactly one token.
+# A pattern without "*" must match the whole command. Roots are matched lower-cased and without a
+# leading "minecraft:" namespace. The most specific match wins
+# (most literal tokens, then most tokens); on a tie the most restrictive tier wins.
+# Anything that matches nothing is "confirm".
+#
+# The HARD_CONFIRM and HARD_DENY roots are enforced in policy.py whatever this file says;
+# they are repeated here so the file reads as the complete picture.
+
+read = [
+    "list",
+    "list uuids",
+    "tick query",
+    "time query *",
+    "data get *",
+    "seed",
+    "difficulty",
+    "gamerule ?",                   # query form: one argument
+    "scoreboard objectives list",
+    "scoreboard players list *",
+    "team list *",
+    "worldborder get",
+    "forceload query",
+    "forceload query *",
+    "locate *",
+    "datapack list",
+    "datapack list *",
+    "version",
+    "help",
+    "help *",
+    "spark health",
+    "spark tps",
+    "tps",
+]
+
+write = [
+    "say *",
+    "tellraw *",
+    "title *",
+    "tp *",
+    "teleport *",
+    "give *",
+    "clear *",
+    "effect *",
+    "summon *",
+    "setblock *",
+    "time set *",
+    "weather *",
+    "gamerule ? ?",                 # set form: two arguments
+    "gamemode *",
+    "forceload add *",
+    "forceload remove *",
+    "scoreboard *",
+    "team *",
+    "tag *",
+    "attribute *",
+    "damage *",
+    "xp *",
+    "experience *",
+    "spawnpoint *",
+    "playsound *",
+    "particle *",
+    "save-all",
+    "save-on",
+    "tick *",                       # "tick query" is more specific and stays read
+    "player *",                     # Carpet fake players
+    "data merge *",
+    "data modify *",
+    "data remove *",
+]
+
+confirm = [
+    # HARD_CONFIRM roots (also enforced in code, together with every root starting with "/")
+    "stop", "stop *",
+    "op *", "deop *",
+    "ban *", "ban-ip *", "pardon *", "pardon-ip *",
+    "whitelist *",
+    "kick *",
+    "kill", "kill *",
+    "fill *", "clone *",
+    "save-off", "save-off *",
+    "reload", "reload *",
+    "lp *", "luckperms *", "perm *",
+    # other privileged or destructive commands
+    "difficulty ?",
+    "defaultgamemode *",
+    "worldborder *",                # "worldborder get" is more specific and stays read
+    "datapack enable *",
+    "datapack disable *",
+    "spreadplayers *",
+    "function *",
+    "schedule *",
+    "setworldspawn *",
+]
+
+deny = [
+    # HARD_DENY roots (also enforced in code)
+    "debug", "debug *",
+    "perf", "perf *",
+    "jfr", "jfr *",
+    "publish", "publish *",
+    "transfer", "transfer *",
+]
