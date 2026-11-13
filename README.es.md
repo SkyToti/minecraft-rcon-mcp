@@ -2,6 +2,8 @@
 
 # minecraft-rcon-mcp
 
+[![CI](https://github.com/SkyToti/minecraft-rcon-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SkyToti/minecraft-rcon-mcp/actions/workflows/ci.yml)
+
 Un servidor MCP que deja a un agente de IA operar un servidor de Minecraft Java por RCON sin confiar en el agente.
 
 - **Problema:** RCON no tiene niveles de permiso. Darle la contraseña RCON a un agente es darle permisos de operador.

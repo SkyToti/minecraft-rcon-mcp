@@ -2,6 +2,8 @@
 
 # minecraft-rcon-mcp
 
+[![CI](https://github.com/SkyToti/minecraft-rcon-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/SkyToti/minecraft-rcon-mcp/actions/workflows/ci.yml)
+
 An MCP server that lets an AI agent operate a Minecraft Java server over RCON without trusting the agent.
 
 - **Problem:** RCON has no permission levels. Giving an agent the RCON password gives it operator rights.
