@@ -156,43 +156,58 @@ def test_invalid_level(server, level):
         tail(Path("logs/latest.log"), server, level=level)
 
 
-# ------------------------------------------------------------------------------------------ regex filter
+# ------------------------------------------------------------------------------------------ text filter
 
 
-def test_regex_filter(server):
+def test_contains_filter(server):
     write_log(server, SAMPLE)
-    entries = tail(Path("logs/latest.log"), server, pattern=r"overloaded|Done")["entries"]
-    assert [e["level"] for e in entries] == ["WARN", "INFO"]
+    entries = tail(Path("logs/latest.log"), server, contains="overloaded")["entries"]
+    assert [e["level"] for e in entries] == ["WARN"]
 
 
-def test_regex_matches_continuation_lines(server):
+def test_contains_is_case_insensitive(server):
     write_log(server, SAMPLE)
-    entries = tail(Path("logs/latest.log"), server, pattern="NullPointer")["entries"]
+    entries = tail(Path("logs/latest.log"), server, contains="CAN'T KEEP UP")["entries"]
+    assert [e["level"] for e in entries] == ["WARN"]
+    assert tail(Path("logs/latest.log"), server, contains="nullpointerexception")["returned"] == 1
+
+
+def test_contains_matches_continuation_lines(server):
+    write_log(server, SAMPLE)
+    entries = tail(Path("logs/latest.log"), server, contains="NullPointer")["entries"]
     assert len(entries) == 1 and entries[0]["level"] == "ERROR"
 
 
-def test_regex_combined_with_level(server):
+def test_contains_combined_with_level(server):
     write_log(server, SAMPLE)
-    assert tail(Path("logs/latest.log"), server, level="ERROR", pattern="overloaded")["entries"] == []
+    assert tail(Path("logs/latest.log"), server, level="ERROR", contains="overloaded")["entries"] == []
 
 
-@pytest.mark.parametrize("bad", ["(unclosed", "[a-", "*star", "a{2,1}"])
-def test_bad_regex_is_log_error(server, bad):
+@pytest.mark.parametrize("text", [".*", "(a+)+$", "(unclosed", "[a-", "*star", "a{2,1}", "overloaded|Done"])
+def test_contains_has_no_regex_semantics(server, text):
+    write_log(server, SAMPLE + [line("10:00:09", "INFO", "a" * 390)])
+    assert tail(Path("logs/latest.log"), server, contains=text)["entries"] == []
+    write_log(server, SAMPLE + [line("10:00:09", "INFO", f"literal {text} here")])
+    entries = tail(Path("logs/latest.log"), server, contains=text)["entries"]
+    assert [e["text"] for e in entries] == [f"literal {text} here"]
+
+
+def test_contains_not_a_string(server):
     write_log(server, SAMPLE)
     with pytest.raises(LogError):
-        tail(Path("logs/latest.log"), server, pattern=bad)
+        tail(Path("logs/latest.log"), server, contains=["x"])
 
 
-def test_regex_length_limit(server):
+def test_contains_length_limit(server):
     write_log(server, SAMPLE)
-    assert tail(Path("logs/latest.log"), server, pattern="a" * 200)["entries"] == []
+    assert tail(Path("logs/latest.log"), server, contains="a" * 200)["entries"] == []
     with pytest.raises(LogError):
-        tail(Path("logs/latest.log"), server, pattern="a" * 201)
+        tail(Path("logs/latest.log"), server, contains="a" * 201)
 
 
-def test_regex_runs_on_truncated_lines(server):
+def test_contains_runs_on_truncated_lines(server):
     write_log(server, [line("10:00:00", "INFO", "x" * 500 + "NEEDLE")])
-    assert tail(Path("logs/latest.log"), server, pattern="NEEDLE")["entries"] == []
+    assert tail(Path("logs/latest.log"), server, contains="NEEDLE")["entries"] == []
 
 
 # ------------------------------------------------------------------------------------------ untrusted text
@@ -223,7 +238,7 @@ def test_prompt_injection_line_is_flagged_and_cut(server):
     write_log(server, SAMPLE + [line("10:00:09", "INFO", injection)])
     for result in (
         tail(Path("logs/latest.log"), server),
-        tail(Path("logs/latest.log"), server, pattern="Griefer"),
+        tail(Path("logs/latest.log"), server, contains="Griefer"),
     ):
         entry = result["entries"][-1]
         assert entry["untrusted"] is True
@@ -266,7 +281,7 @@ def test_two_megabyte_cap(server):
     late = line("10:00:00", "INFO", "LATE-MARKER")
     path = write_log(server, [early, *filler, late])
     assert path.stat().st_size > MAX_TAIL_BYTES
-    result = tail(Path("logs/latest.log"), server, pattern="MARKER")
+    result = tail(Path("logs/latest.log"), server, contains="MARKER")
     assert [e["text"] for e in result["entries"]] == ["LATE-MARKER"]
     assert result["older_content_skipped"] is True
     assert find_errors(server, Path("logs/latest.log"))["older_content_skipped"] is True

@@ -1,7 +1,8 @@
 # Default command policy (docs/DESIGN.md §4.4). Loaded by policy.load_default_policy().
 #
 # Token globs: "*" = one or more tokens (last position only), "?" = exactly one token.
-# A pattern without "*" must match the whole command. The most specific match wins
+# A pattern without "*" must match the whole command. Roots are matched lower-cased and without a
+# leading "minecraft:" namespace. The most specific match wins
 # (most literal tokens, then most tokens); on a tie the most restrictive tier wins.
 # Anything that matches nothing is "confirm".
 #
@@ -21,10 +22,13 @@ read = [
     "scoreboard players list *",
     "team list *",
     "worldborder get",
+    "forceload query",
     "forceload query *",
     "locate *",
+    "datapack list",
     "datapack list *",
     "version",
+    "help",
     "help *",
     "spark health",
     "spark tps",

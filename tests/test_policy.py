@@ -7,6 +7,7 @@ from minecraft_rcon_mcp.policy import (
     HARD_CONFIRM,
     HARD_DENY,
     MAX_COMMAND_BYTES,
+    MESSAGE_ROOTS,
     CommandRejected,
     Decision,
     Policy,
@@ -48,6 +49,9 @@ READ_EXAMPLES = [
     "datapack list enabled",
     "version",
     "help tp",
+    "help",  # bare query forms
+    "datapack list",
+    "forceload query",
     "spark health",
     "spark tps",
     "tps",
@@ -394,19 +398,35 @@ def test_kelvin_sign_lowercases_to_hard_confirm_kill():
 @pytest.mark.parametrize(
     "command, tier",
     [
+        # one leading "minecraft:" is the vanilla command itself
         ("minecraft:stop", Tier.CONFIRM),
+        ("MINECRAFT:Stop", Tier.CONFIRM),
         ("minecraft:kill @e", Tier.CONFIRM),
         ("minecraft:debug start", Tier.DENY),
-        ("bukkit:transfer x 1 Steve", Tier.DENY),
-        ("minecraft:list", Tier.CONFIRM),  # namespaced roots are never trusted below confirm
-        ("minecraft:say hi", Tier.CONFIRM),
+        ("minecraft:list", Tier.READ),
+        ("Minecraft:LIST", Tier.READ),
+        ("minecraft:say hi", Tier.WRITE),
+        ("minecraft:say hi @a", Tier.WRITE),
+        ("minecraft:tp @a 0 64 0", Tier.CONFIRM),
         ("minecraft:execute as @a run debug start", Tier.DENY),
-        ("minecraft:execute if entity @e", Tier.CONFIRM),
+        ("minecraft:execute if entity @e", Tier.READ),
+        ("execute as @s run minecraft:list", Tier.READ),
+        ("//minecraft:set", Tier.CONFIRM),
+        # any other namespace is never trusted below confirm
+        ("minecraft:minecraft:list", Tier.CONFIRM),  # only ONE minecraft: is removed
+        ("bukkit:list", Tier.CONFIRM),
+        ("evil:say hi", Tier.CONFIRM),
+        ("bukkit:transfer x 1 Steve", Tier.DENY),
+        ("evil:execute if entity @e", Tier.CONFIRM),
         ("evil:op Steve", Tier.CONFIRM),
     ],
 )
 def test_namespaced_roots(command, tier):
     assert tier_of(command) is tier
+
+
+def test_minecraft_namespace_is_sent_as_given():
+    assert classify("/minecraft:list", RW, POLICY).normalized == "minecraft:list"
 
 
 @pytest.mark.parametrize("command", ["//set stone", "//pos1", "//wand", "//undo", "///x", "// /x"])
@@ -469,9 +489,24 @@ def test_worldedit_cannot_be_lowered_even_by_a_hand_built_policy():
         ("tp @r 0 64 0", Tier.WRITE),
         ("tp @n 0 64 0", Tier.WRITE),
         ("tp @n[type=zombie] @p", Tier.WRITE),
-        # every argument counts, including message text and the execute prefix
-        ("say hi @a", Tier.CONFIRM),
+        # message commands: their own selectors pick an audience and do not escalate
+        ("say hi @a", Tier.WRITE),
+        ('tellraw @a {"text":"x"}', Tier.WRITE),
+        ('title @a title "x"', Tier.WRITE),
+        ("title @e[limit=3] actionbar hi", Tier.WRITE),
+        ("playsound minecraft:block.bell.use master @a", Tier.WRITE),
+        ("particle minecraft:flame ~ ~ ~ 1 1 1 0 10 force @a", Tier.WRITE),
+        ("execute as @s run say hi @a", Tier.WRITE),
+        ("give @a minecraft:diamond", Tier.CONFIRM),  # not a message command
+        ("clear @a", Tier.CONFIRM),
+        # an unbounded selector in the execute prefix escalates every wrapped write, messages included
+        ("execute as @a run say hi", Tier.CONFIRM),
+        ('execute at @e run tellraw @s {"text":"x"}', Tier.CONFIRM),
         ("execute as @a run tp @s 0 64 0", Tier.CONFIRM),
+        ("execute as @a store result score @s x run data get entity @s Health", Tier.CONFIRM),
+        ("execute as @a summon minecraft:zombie", Tier.CONFIRM),
+        ("execute as @s run tp @a 0 64 0", Tier.CONFIRM),
+        ("execute as @s run execute as @a run say hi", Tier.CONFIRM),
         ("execute as @e[type=zombie] run tp @s ~ ~1 ~", Tier.WRITE),
         ("execute as @a[limit=1] run tp @s 0 64 0", Tier.WRITE),
         # read tier is never escalated
@@ -546,6 +581,10 @@ def test_default_policy_loads_four_tiers():
     assert "tick query" in POLICY.read and "tick *" in POLICY.write
     for root in HARD_DENY:
         assert root in POLICY.deny
+
+
+def test_message_roots():
+    assert MESSAGE_ROOTS == frozenset({"say", "tellraw", "title", "playsound", "particle"})
 
 
 def test_hard_sets():

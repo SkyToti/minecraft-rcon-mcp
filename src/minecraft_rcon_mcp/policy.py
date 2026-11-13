@@ -8,11 +8,15 @@ How a command is classified, in order:
    (Unicode ``Cf``, e.g. bidi overrides that could disguise a command in the approval dialog), line/paragraph
    separators, and anything over 1400 UTF-8 bytes. It strips surrounding spaces, collapses runs of spaces and
    strips ONE leading ``/``. The normalized string is what must be sent to the server.
-2. The root (first token) is lower-cased for matching; arguments match case-sensitively.
+2. The root (first token) is lower-cased for matching, and one leading ``minecraft:`` namespace is removed
+   from it (``minecraft:stop`` is ``stop``); arguments match case-sensitively. The command is still sent as given.
 3. ``HARD_DENY`` roots are ``deny``. ``execute … run X`` and ``return run X`` take the tier of ``X``.
    Otherwise the policy patterns decide; nothing matched → ``confirm``.
 4. ``HARD_CONFIRM`` roots, and every root starting with ``/`` (WorldEdit), are never below ``confirm``.
-5. A ``write`` command with an unbounded ``@a`` / ``@e`` selector anywhere in it becomes ``confirm``.
+5. A ``write`` command becomes ``confirm`` when an unbounded ``@a`` / ``@e`` selector multiplies its effect:
+   in its own arguments, or in the prefix of an ``execute`` that wraps it. Message commands (``MESSAGE_ROOTS``:
+   ``say``, ``tellraw``…) do not escalate on their own arguments: asking a human to approve every broadcast
+   causes approval fatigue, which weakens the confirmations that matter.
 
 Pattern syntax (token globs): a literal token matches itself; ``?`` matches exactly one token (an extension of
 DESIGN §4.3, used for ``gamerule ?`` vs ``gamerule ? ?``); ``*`` matches one or more tokens and is only allowed
@@ -26,10 +30,10 @@ Choices stricter than the letter of DESIGN §4 (each is tested):
   make it at least ``write``; ``function`` (``execute if function``) makes it at least ``confirm``.
 - Selectors: ``@a`` needs ``limit=N`` with 1 ≤ N ≤ 10; ``@e`` needs a positive ``type=`` (``type=!x`` does not
   count), and ``@e[type=player]`` is treated like ``@a``. Selectors with nested data (``{``, ``[``, quotes) or
-  split by spaces count as unbounded. Every argument counts: the ``execute`` prefix, and also message text
-  (``say hi @a`` needs confirmation).
-- Namespaced roots (``minecraft:stop``) are classified as the bare root but never below ``confirm``, unless a
-  pattern names the namespaced root explicitly.
+  split by spaces count as unbounded. An unbounded selector in the ``execute`` prefix escalates whatever
+  ``write`` command it wraps (``execute as @a run say hi`` needs confirmation).
+- Other namespaces (``plugin:cmd``) are classified as ``cmd`` but never below ``confirm``, unless a pattern
+  names the namespaced root explicitly.
 - An unknown ``mode`` is treated as ``read-only``.
 """
 from __future__ import annotations
@@ -78,10 +82,15 @@ HARD_CONFIRM: frozenset[str] = frozenset({
     "clone", "save-off", "reload", "lp", "luckperms", "perm",
 })  # plus every root starting with "/" (WorldEdit), see _is_hard_confirm()
 HARD_DENY: frozenset[str] = frozenset({"debug", "perf", "jfr", "publish", "transfer"})
+# Commands that only show something to players: an unbounded selector in their own arguments picks the
+# audience, it does not multiply a state change. (A selector in a wrapping execute prefix still counts.)
+MESSAGE_ROOTS: frozenset[str] = frozenset({"say", "tellraw", "title", "playsound", "particle"})
 
 MAX_COMMAND_BYTES = 1400
 MAX_EXECUTE_DEPTH = 8
 MAX_SELECTOR_LIMIT = 10
+_VANILLA_NAMESPACE = "minecraft:"
+_UNBOUNDED = f"unbounded selector (@a needs limit=1..{MAX_SELECTOR_LIMIT}, @e needs type=)"
 
 _SEVERITY = {Tier.READ: 0, Tier.WRITE: 1, Tier.CONFIRM: 2, Tier.DENY: 3}
 _FORBIDDEN_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
@@ -111,8 +120,14 @@ def normalize(command: str) -> str:
 # --------------------------------------------------------------------------------------------- patterns
 
 
+def _root(token: str) -> str:
+    """Command root for matching: lower-cased, one leading 'minecraft:' removed."""
+    root = token.lower()
+    return root[len(_VANILLA_NAMESPACE):] if root.startswith(_VANILLA_NAMESPACE) else root
+
+
 def _pattern_tokens(pattern: str) -> list[str]:
-    """Split and validate one pattern. Raises ValueError. The root is lower-cased like a command root."""
+    """Split and validate one pattern. Raises ValueError. The root is normalized like a command root."""
     if not isinstance(pattern, str):
         raise ValueError(f"pattern must be a string, got {type(pattern).__name__}")
     if any(unicodedata.category(c) in _FORBIDDEN_CATEGORIES for c in pattern):
@@ -124,7 +139,7 @@ def _pattern_tokens(pattern: str) -> list[str]:
         raise ValueError(f"pattern {pattern!r}: the first token must be a literal command name")
     if "*" in tokens[:-1]:
         raise ValueError(f"pattern {pattern!r}: '*' is only allowed as the last token")
-    return [tokens[0].lower(), *tokens[1:]]
+    return [_root(tokens[0]), *tokens[1:]]
 
 
 @functools.cache
@@ -212,6 +227,11 @@ def _is_hard_confirm(root: str) -> bool:
     return root in HARD_CONFIRM or root.startswith("/")
 
 
+def _escalate(found: tuple[Tier, str], unbounded: bool) -> tuple[Tier, str]:
+    """An unbounded selector turns a write into confirm."""
+    return (Tier.CONFIRM, _UNBOUNDED) if unbounded and found[0] is Tier.WRITE else found
+
+
 def _execute_floor(lowered: set[str]) -> tuple[Tier, str]:
     """Side effects of the execute subcommands themselves, given the lower-cased tokens before 'run'."""
     if "function" in lowered:
@@ -234,14 +254,14 @@ def _pattern_tier(policy: Policy, root: str, bare: str, args: Sequence[str]) -> 
 
 
 def _classify_words(words: tuple[str, ...], policy: Policy) -> tuple[Tier, str]:
-    """Tier of a normalized, split command, before selector escalation."""
+    """Tier of a normalized, split command."""
 
     @functools.cache  # (start, depth) -> tier; keeps many 'run' tokens from exploding the search
     def at(start: int, depth: int) -> tuple[Tier, str]:
         if start >= len(words):
             return Tier.CONFIRM, "'run' is not followed by a command"
-        root = words[start].lower()
-        bare = root.rpartition(":")[2]  # "minecraft:stop" -> "stop"
+        root = _root(words[start])
+        bare = root.rpartition(":")[2]  # "plugin:stop" -> "stop"
         if root in HARD_DENY or bare in HARD_DENY:
             return Tier.DENY, f"'{bare}' is never allowed through this server"
 
@@ -251,7 +271,9 @@ def _classify_words(words: tuple[str, ...], policy: Policy) -> tuple[Tier, str]:
             if bare != root and _SEVERITY[tier] < _SEVERITY[Tier.CONFIRM]:
                 tier, reason = Tier.CONFIRM, f"namespaced command '{root}' needs confirmation"
         else:
-            tier, reason = _pattern_tier(policy, root, bare, words[start + 1:])
+            args = words[start + 1:]
+            own_selectors = bare not in MESSAGE_ROOTS and any(_is_unbounded_selector(a) for a in args)
+            tier, reason = _escalate(_pattern_tier(policy, root, bare, args), own_selectors)
 
         if (_is_hard_confirm(root) or _is_hard_confirm(bare)) and _SEVERITY[tier] < _SEVERITY[Tier.CONFIRM]:
             tier, reason = Tier.CONFIRM, f"'{bare}' always needs confirmation"
@@ -263,14 +285,16 @@ def _classify_words(words: tuple[str, ...], policy: Policy) -> tuple[Tier, str]:
             return Tier.DENY, f"execute nested deeper than {MAX_EXECUTE_DEPTH}"
         candidates: list[tuple[Tier, str]] = []
         prefix: set[str] = set()
+        unbounded = False  # an unbounded selector in the prefix (execute as @a …) multiplies the inner command
         for i in range(start + 1, len(words)):
             token = words[i].lower()
             # a trailing 'run' cannot be the real split when an earlier one exists (nothing would follow it)
             if token == "run" and (i + 1 < len(words) or not candidates):
-                candidates += [at(i + 1, depth + 1), _execute_floor(prefix)]
+                candidates += [_escalate(at(i + 1, depth + 1), unbounded), _escalate(_execute_floor(prefix), unbounded)]
             prefix.add(token)
+            unbounded = unbounded or _is_unbounded_selector(words[i])
         if not candidates:
-            return _execute_floor(prefix)
+            return _escalate(_execute_floor(prefix), unbounded)
         return max(candidates, key=lambda candidate: _SEVERITY[candidate[0]])
 
     return at(0, 0)
@@ -300,9 +324,6 @@ def classify(command: str, mode: str, policy: Policy) -> Decision:
     try:
         words = tuple(normalized.split(" "))
         tier, reason = _classify_words(words, policy)
-        if tier is Tier.WRITE and any(_is_unbounded_selector(w) for w in words[1:]):
-            tier = Tier.CONFIRM
-            reason = f"unbounded selector (@a needs limit=1..{MAX_SELECTOR_LIMIT}, @e needs type=)"
         return _decide(tier, mode, normalized, reason)
     except Exception:  # noqa: BLE001 — e.g. a malformed pattern in a hand-built Policy
         return Decision(Tier.DENY, False, False, normalized, "Refused: the policy could not be evaluated.")
