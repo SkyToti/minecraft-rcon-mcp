@@ -85,6 +85,13 @@ step_delay_ms = 250
 Validation errors name the key and the reason; a missing server directory or `server.properties` is an error
 at call time, not at startup (servers come and go).
 
+Safe defaults: an omitted `mode` is `read-only`; server names are limited to `[A-Za-z0-9_-]`; a scenario must
+declare `bot_pattern`; `step_delay_ms` is 0–60000 (default 250); a non-loopback `host` is rejected both when the
+config is loaded and again when the endpoint is read, unless `allow_remote = true`.
+
+RCON retry rule: the client reconnects only if the connection was already closed before sending. If it drops
+after the command was sent, the call fails without resending — the command may have run.
+
 ## 4. Policy — the security core (`policy.py`)
 
 ### 4.1 Tiers
@@ -251,7 +258,8 @@ Required test groups:
    user config trying to lower `op` to `read`); read-only mode refusing `write` and `confirm`.
 2. `test_tickets.py` — happy path; reuse; expiry (injectable clock); wrong command; wrong server; burn on failure.
 3. `test_rcon.py` — auth ok / wrong password / server down / oversize body / reconnect.
-4. `test_logs.py` — level filter, regex filter, bad regex, chat flagged untrusted, 2 MB cap, path escape refused,
+4. `test_logs.py` — level filter, literal `contains` filter (regex metacharacters treated as text), chat flagged
+   untrusted, 2 MB cap, path escape refused,
    errors-since-last-start, crash-report header.
 5. `test_service.py` — each tool end to end against the fake server; refused commands absent from the fake
    server's record; rate limiting; password never present in any result or in the audit file (grep for it).
